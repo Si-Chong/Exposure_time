@@ -1,0 +1,360 @@
+---
+title: "Exposure time is an important variable in quantifying post-dispersal seed removal"
+author: "Si-Chong Chen, Bo Wang and Angela T. Moles"
+date: "9 January 2021"
+output: html_document
+---
+
+<br/>
+
+```{r global-options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, fig.width = 7, fig.height = 6)
+```
+
+# 1 Reproduce Dylewski et al. (2020)'s Figure 2 #
+This comment is in no way intended to discredit the statistical analyses of Dylewski et al. (2020). Rather, *we focus on their dataset of seed removal*. So, we used the same statistical model as in their study, via the `glmmTMB` package in R v.4.0.3. We also applied the same data tranformation for seed mass and seed removal, respectively.
+
+Note: We did not have analyses on ecosystem or provenance, but we followed the figure style as in Dylewski et al. (2020) Figure 2 for the ease of comparison.
+
+&nbsp;
+
+#### A few caveats of Dylewski et al. (2020)'s dataset: ####
+When reviewing the dataset, we incidentally discovered a few potential errors or typos. Although we assume these minor errors will not affect the general appearance of Dylewski et al. (2020)'s Figure 2, they may represent a lack of consistency in the dataset. Also, these issues are non-exclusive, as we did not review the full suite of the data points in Dylewski et al. (2020)'s dataset. We corrected (1) and (2) in our analyses.\
+(1) Heithaus 1981 -- Species names, seed mass and seed removal are crossed (Removal rates of *Sanguinaria canadensis*, *Asarum canadense*, and *Jeffersonia diphylla* are 0.84, 0.704 and 0.46, respectively, and seed mass are 15.69, 13.21, 36.84, respectively).\
+(2) Dirzo et al. 2007 -- Data from Fig. 3A "Control" treatment are overestimated than the figure shows (Removal rates of *Chamaedorea alternans*, *Chamaedorea pinnatifrons*, *Hampea nutricia*, and *Poulsenia armata* are 0.611, 0.748, 0.531 and 0.578, respectively).\
+(3) Schreiner et al. 2000 -- The data reported in this paper are the proportion of surviving dish, rather than the proportion of surviving seeds.\
+
+Several data points potentially violate Dylewski et al. (2020)'s statement that "if the removal rate approached 100% for multiple plant species (potentially truncating responses), we used the middle trial or median time point". We corrected (4) and (5) in our analyses.\
+(4) Jinks et al. 2012 -- *Fagus sylvatica* and *Quercus robur* reached 100% removal on day 4, but the dataset indicates that the authors used day 6.\
+(5) Kollmann et al. 1998 -- Removal of *Prunus spinosa* was truncated on day 30, rather than day 56 as other species in this paper.\
+(6) Holl and Lulow 1997 -- Several species did not reach 100% removal on day 30 (final day of the experiment), but the original dataset still used the data on day 18.\
+
+&nbsp;
+
+```{r include = FALSE}
+setwd("S:/Research/MSB/PY and predation/EL")
+```
+
+```{r message = FALSE}
+# Load packages
+library(tidyverse)
+library(readxl)
+library(glmmTMB)
+library(boot)
+
+library(knitr)
+library(kableExtra)
+
+# Load data
+data <- read_excel("DRYAD SEED REMOVAL DATASET - ADDITIONAL FACTORS.xlsx", sheet = 1, na = "NA")
+
+# Transform data according to Dylewski et al. (2020)
+data = data %>% 
+  # "Seed mass (+1) was natural log-transformed for analysis."
+  mutate(MASS_ln = log(MASS + 1)) %>% 
+  # ECOSYSTEM & PROV -- Convert to sentence case
+  mutate(ECOSYSTEM = str_to_sentence(ECOSYSTEM), PROV = str_to_sentence(PROV)) %>% 
+  # Reorder factor levels
+  mutate(ECOSYSTEM = factor(ECOSYSTEM, levels = c("Grassland", "Temperate", "Tropical", "Other")))
+
+# Transform data according to Dylewski et al. (2020)
+data_C = data %>% 
+  # Rescale to 0 < y < 1
+  # "... applying a small, linear transformation to eliminate zeros and ones (Smithson & Verkuilen 2006)
+  mutate(REMOVAL_C = (REMOVAL * (nrow(data) - 1) + 1/2)/nrow(data))
+
+# Model
+# "... using generalised linear mixed models (GLMMs) with a beta distribution and a restricted maximum-likelihood (REML) estimator"
+model <- glmmTMB(REMOVAL_C ~ MASS_ln + I(MASS_ln^2) + (1|PUB), data = data_C, 
+                 family = beta_family(link = "logit"), REML = TRUE)
+summary(model); coef = summary(model)$coefficients$cond
+
+
+# Palette
+cols <- c("Grassland" = "#D55E00", "Temperate" = "#0072B2", "Tropical" = "#FFC425", "Other" = "#888888")
+
+# Graph
+ggplot(data = data_C, aes(x = MASS_ln, y = REMOVAL_C)) + 
+  geom_point(aes(colour = ECOSYSTEM, shape = PROV), cex = 3, alpha = 0.75) + 
+  stat_function(fun = function(x) {inv.logit(coef[1, 1] + coef[2, 1]*x + coef[3, 1]*(x^2))}, 
+                size = 1.5, colour = "black") +
+  scale_x_continuous(breaks=c(0, 2.5, 5, 7.5, 10)) +
+  scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+  scale_colour_manual(values = cols) +
+  xlab("ln seed mass (mg)") + ylab("Proportion of seeds removed") +
+  theme_test(base_size = 18) +
+  theme(legend.position = "top", legend.box = "vertical",
+        axis.text = element_text(colour = "black")) +
+  guides(colour = guide_legend(title="Ecosystem:", order = 1), 
+         shape = guide_legend(title="Provenance:", order = 2))
+```
+
+&nbsp;
+
+# 2 Exposure time #
+## 2.1 Time-series data ##
+We reviewed the 71 source publications in Dylewski et al. (2020) and extracted time-series seed removal data. Among the 372 data points (i.e. scenarios), 125 present data for four or more time intervals.
+
+For each scenario (`ID`), we fitted a linear decline model and an exponential decline model. In the linear decline in seed survival through time, final removal rate was divided by the exposure days (following Garcia-Castano et al. 2006). In the exponential decline in seed survival through time, removal rate was constant daily (following Mittelbach & Gross 1984; Blate et al. 1998). We selected the model with adjusted R-squared 0.01 larger than the other model. If the difference of adjusted R-squared was less than 0.01, the two models are regarded to be equal.
+
+```{r message = FALSE}
+# Load data
+data.T <- read_excel("DRYAD SEED REMOVAL DATASET - TIME SERIES DATA.xlsx", sheet = 1, na = "NA")
+
+# Create empty vectors
+R2_Ls = rep(NA, length(unique(data.T$ID)))
+R2_Es = rep(NA, length(unique(data.T$ID)))
+
+# Model processing
+# This for-loop will go through each ID
+for (n in 1:length(unique(data.T$ID))){
+  m_L = data.T %>% filter(ID == n) %>% lm(formula = SURVIVAL ~ DAY) %>% summary()
+  m_E = data.T %>% filter(ID == n) %>% lm(formula = log(SURVIVAL) ~ DAY) %>% summary()
+  # Fill in values
+  R2_Ls[n] = m_L$adj.r.squared
+  R2_Es[n] = m_E$adj.r.squared
+}
+
+# Organise values to result
+Result = tibble(ID = unique(data.T$ID), R2_L = R2_Ls, R2_E = R2_Es) %>% 
+  mutate(Model = ifelse(R2_L - R2_E > 0.01, "Linear", 
+                        ifelse(R2_L - R2_E < -0.01, "Exponential", "Equal")))
+# Summary
+Result %>% group_by(Model) %>% count() %>% arrange(-n) %>% 
+  kable(align = "lr", digits = 2) %>% 
+  kable_styling(full_width = F)
+
+```
+
+Three scenarios have zero removal rates (100% survival) and thus resulted in `NA` values in model fits. 
+Most scenarios (89 out of 125) had a better fit in the exponential decline model and 20 had equal fits in both models. Therefore, we standardised the seed removal data using an exponential decline.
+
+
+## 2.2 Exposure time data ##
+We supplemented the original dataset with a column of exposure time to seed predators (`TIME_D`) according to the descriptions in the 71 source publications (`PUB`) and the time points where Dylewski et al. (2020) extracted removal data from (see `Section 3`).
+
+Exposure time ranged from 0.5 to 210 days (n = 362).
+
+```{r warning = TRUE}
+ggplot(data, aes(TIME_D)) + 
+  geom_histogram(binwidth = 1, col = I("black")) +
+  xlab("Time (day)") + ylab("Count") +
+  theme_test(base_size = 18) +
+  theme(axis.text = element_text(colour = "black"))
+```
+
+One study (Dirzo et al. 2007; 10 data points) did not clearly state the seed exposure times and was therefore excluded in the subsequent analyses (Note the adding of `drop_na(TIME_D)`). The pattern (below) is similar with the result in Dylewski et al. (2020). That is, the exclusion of these 10 data points is *not* the reason of the difference between the result of Dylewski et al. (2020) and our re-analyses.
+
+```{r}
+# Transform data according to Dylewski et al. (2020)
+data_C = data %>% drop_na(TIME_D) %>% 
+  # "... applying a small, linear transformation to eliminate zeros and ones (Smithson & Verkuilen 2006)
+  # Rescale to 0 < y < 1
+  mutate(REMOVAL_C = (REMOVAL * (nrow(data) - 1) + 1/2)/nrow(data))
+
+# Model
+# "... using generalised linear mixed models (GLMMs) with a beta distribution and a restricted maximum-likelihood (REML) estimator"
+model <- glmmTMB(REMOVAL_C ~ MASS_ln + I(MASS_ln^2) + (1|PUB), data = data_C, 
+                 family = beta_family(link = "logit"), REML = TRUE)
+summary(model); coef = summary(model)$coefficients$cond
+
+# Graph
+ggplot(data = data_C, aes(x = MASS_ln, y = REMOVAL_C)) + 
+  geom_point(aes(colour = ECOSYSTEM, shape = PROV), cex = 3, alpha = 0.75) + 
+  stat_function(fun = function(x) {inv.logit(coef[1, 1] + coef[2, 1]*x + coef[3, 1]*(x^2))}, 
+                size = 1.5, colour = "black") +
+  scale_x_continuous(breaks=c(0, 2.5, 5, 7.5, 10)) +
+  scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+  scale_colour_manual(values = cols) +
+  xlab("ln seed mass (mg)") + ylab("Proportion of seeds removed") +
+  theme_test(base_size = 18) +
+  theme(legend.position = "top", legend.box = "vertical",
+        axis.text = element_text(colour = "black")) +
+  guides(colour = guide_legend(title="Ecosystem:", order = 1), 
+         shape = guide_legend(title="Provenance:", order = 2))
+```
+
+
+## 2.3 An exponential decline in seed survival through time ##
+When we assumed an exponential decline in seed survival through time, the effect of seed mass on removal rate remained significant, but became very shallow (*P* = 0.048; peak point of seed removal = 0.244).
+
+```{r}
+# Standardise data
+data_C = data %>% drop_na(TIME_D) %>% 
+  # Exponential decline
+  mutate(SURVIVAl = 1 - REMOVAL,
+         REMOVAL_Exp = 1 - SURVIVAl^(1/TIME_D)) %>% 
+  # Rescale to 0 < y < 1
+  mutate(REMOVAL_C = (REMOVAL_Exp * (nrow(data) - 1) + 1/2)/nrow(data))
+
+# Model
+model <- glmmTMB(REMOVAL_C ~ MASS_ln + I(MASS_ln^2) + (1|PUB), data = data_C, 
+                 family = beta_family(link = "logit"), REML = TRUE)
+summary(model); coef = summary(model)$coefficients$cond
+
+# Graph
+ggplot(data = data_C, aes(x = MASS_ln, y = REMOVAL_C)) + 
+  geom_point(aes(colour = ECOSYSTEM, shape = PROV), cex = 3, alpha = 0.75) + 
+  stat_function(fun = function(x) {inv.logit(coef[1, 1] + coef[2, 1]*x + coef[3, 1]*(x^2))}, 
+                size = 1.5, colour = "black") +
+  scale_x_continuous(breaks=c(0, 2.5, 5, 7.5, 10)) +
+  scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+  scale_colour_manual(values = cols) +
+  xlab("ln seed mass (mg)") + ylab("Proportion of seeds removed") +
+  theme_test(base_size = 18) +
+  theme(legend.position = "top", legend.box = "vertical",
+        axis.text = element_text(colour = "black")) +
+  guides(colour = guide_legend(title="Ecosystem:", order = 1), 
+         shape = guide_legend(title="Provenance:", order = 2))
+```
+
+&nbsp;
+
+# 3 Species whose seed removal rate was taken from the mid-point had significantly larger seed mass
+Dylewski et al. (2020) states "When seed removal studies presented data for multiple trials or time points per species, we used data from the last or longest reported time interval with one exception: if the removal rate approached 100% for multiple plant species (potentially truncating responses), we used the middle trial or median time point."
+
+We reviewed the 71 source publications and figured out which studies this criterion was applied to. In Dylewski et al. (2020)'s dataset, 27% of the data points (99 out of 372) are not from the last or longest reported time interval.
+
+```{r}
+data %>% group_by(TIME_LAST) %>% count() %>% 
+  kable(align = "lr", digits = 2) %>% 
+  kable_styling(full_width = F)
+```
+
+Then, we evaluated whether these data points are a non-random part of the seed mass distribution, using a linear mixed-effects model with publications (`PUB`) as the random-effects term.
+
+On average, we found that the data from middle trial or median time point had 20-fold larger seed mass than those from the last or longest reported time interval (845.7 mg vs 42.6 mg).
+
+Dots and bars within violin plots show the mean and the standard deviations of each group, respectively. Values in parentheses stand for numbers of data points.
+
+```{r message = FALSE}
+library(lme4)
+library(lmerTest)
+lmer(data = data, MASS_ln ~ TIME_LAST + (1|PUB), REML = TRUE) %>% summary()
+
+# Function to produce summary statistics (mean and +/- sd)
+data_summary <- function(x) {
+  m <- mean(x)
+  ymin <- m - sd(x)
+  ymax <- m + sd(x)
+  return(c(y = m, ymin = ymin, ymax = ymax))
+}
+
+ggplot(data, aes(x = TIME_LAST, y = MASS_ln, fill = TIME_LAST)) + 
+  geom_violin(trim = TRUE) +
+  stat_summary(fun.data = data_summary) +
+  xlab("Time point used") + ylab("ln seed mass (mg)") +
+  scale_x_discrete(labels = c("Mid-point (99)", "End-point (273)")) +
+  scale_y_continuous(breaks = c(0, 2.5, 5, 7.5, 10)) +
+  theme_test(base_size = 18) +
+  theme(legend.position = "none", axis.text = element_text(colour = "black"))
+```
+
+When quantifying the relationship between seed mass and seed removal using only data from the last or longest reported time interval, the unimodal relationship between seed mass and seed removal vanished (*P* = 0.278).
+
+```{r}
+# Standardise data
+data_C = data %>% drop_na(TIME_D) %>% 
+  # Exponential decline
+  mutate(SURVIVAl = 1 - REMOVAL,
+         REMOVAL_Exp = 1 - SURVIVAl^(1/TIME_D)) %>% 
+  # Rescale to 0 < y < 1
+  mutate(REMOVAL_C = (REMOVAL_Exp * (nrow(data) - 1) + 1/2)/nrow(data))
+
+# Model
+# Mid-point data (i.e. "N" data)
+data_C_N = data_C %>% dplyr::filter(TIME_LAST == "N")
+model_N <- glmmTMB(REMOVAL_C ~ MASS_ln + I(MASS_ln^2) + (1|PUB), data = data_C_N,
+                   family = beta_family(link = "logit"), REML = TRUE)
+summary(model_N); coef_N = summary(model_N)$coefficients$cond
+# End-point data (i.e. "Y" data)
+data_C_Y = data_C %>% dplyr::filter(TIME_LAST == "Y")
+model_Y <- glmmTMB(REMOVAL_C ~ MASS_ln + I(MASS_ln^2) + (1|PUB), data = data_C_Y,
+                   family = beta_family(link = "logit"), REML = TRUE)
+summary(model_Y); coef_Y = summary(model_Y)$coefficients$cond
+
+# Graph
+ggplot(data = data_C, aes(x = MASS_ln, y = REMOVAL_C)) + 
+  geom_point(aes(colour = TIME_LAST), cex = 3, alpha = 0.5) + 
+  scale_colour_discrete(name = "Time point used:", labels = c("Mid-point", "End-point")) +
+  stat_function(fun = function(x) {inv.logit(coef_N[1, 1] + coef_N[2, 1]*x + coef_N[3, 1]*(x^2))}, size = 1.5, colour = "#F8766D") +
+  stat_function(fun = function(x) {inv.logit(coef_Y[1, 1] + coef_Y[2, 1]*x + coef_Y[3, 1]*(x^2))}, size = 1.5, colour = "#00BFC4", linetype = 5) +
+  scale_x_continuous(breaks=c(0, 2.5, 5, 7.5, 10)) +
+  scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+  xlab("ln seed mass (mg)") + ylab("Proportion of seeds removed") +
+  theme_test(base_size = 18) +
+  theme(legend.position = "top", legend.box = "vertical",
+        axis.text = element_text(colour = "black"))
+```
+
+&nbsp;
+
+# 4 The effect of seed density #
+## 4.1 Data of seed number per deport ##
+We supplemented the original dataset with a column of seed number per depot (`SEED_NUMBER_PER_DEPOT`) according to the descriptions in the 71 source publications (`PUB`).
+One study (Hulme 1997; 3 data points) presented seed removal rates of both single-seed treatment and 10-seed treatment, and Dylewski et al. (2020) used the merged data for both densities. These data points were therefore excluded in the subsequent analyses.
+
+Seed number per depot (n = 369) ranged from 1 to 4167, with a median of 10.
+
+```{r warning = TRUE}
+data.D <- data %>% drop_na(SEED_NUMBER_PER_DEPOT) %>% 
+  mutate(SEED_NUMBER_PER_DEPOT_ln = log(SEED_NUMBER_PER_DEPOT))
+ggplot(data.D, aes(x = SEED_NUMBER_PER_DEPOT_ln)) + 
+  geom_histogram(binwidth = 1, col = I("black")) +
+  xlab("Seed number per depot [log scale]") + ylab("Count") +
+  scale_x_continuous(breaks = c(log(1), log(4), log(40), log(400), log(4000)), labels = c("1", "4", "40", "400", "4000")) +
+  theme_test(base_size = 18) +
+  theme(axis.text = element_text(colour = "black"))
+```
+
+
+We evaluated whether small seeds tend to be presented at higher density than large seeds, using a linear mixed-effects model with publications (`PUB`) as the random-effects term.
+
+```{r}
+model_D <- lmer(data = data.D, SEED_NUMBER_PER_DEPOT_ln ~ MASS_ln + (1|PUB), REML = TRUE)
+summary(model_D); coef_D = summary(model_D)$coefficients
+ggplot(data = data.D, aes(x = MASS_ln, y = SEED_NUMBER_PER_DEPOT_ln)) + 
+  geom_point(cex = 3, alpha = 0.5) + 
+  stat_function(fun = function(x) {coef_D[1, 1] + coef_D[2, 1]*x}, size = 1.5, colour = "black") +
+  scale_x_continuous(breaks=c(0, 2.5, 5, 7.5, 10)) +
+  scale_y_continuous(breaks = c(log(1), log(4), log(40), log(400), log(4000)), labels = c("1", "4", "40", "400", "4000")) +
+  scale_colour_manual(values = cols) +
+  xlab("ln seed mass (mg)") + ylab("Seed number per depot [log scale]") +
+  theme_test(base_size = 18) +
+  theme(axis.text = element_text(colour = "black"),
+        axis.text.y = element_text(hjust = 0.5, angle = 90))
+```
+
+
+## 4.2 Adding seed density as a covariate ##
+We added seed number per depot as a covariate to the model of the relationship between seed mass and seed removal. The unimodal pattern between seed mass and seed removal even shallower (*P* = 0.025; peak point of seed removal = 0.175), and seed density also had a significant effect on seed removal (*P* = 0.042).
+
+```{r}
+# Standardise data
+data_C = data.D %>% drop_na(TIME_D) %>% 
+  # Exponential decline
+  mutate(SURVIVAl = 1 - REMOVAL,
+         REMOVAL_Exp = 1 - SURVIVAl^(1/TIME_D)) %>% 
+  # Rescale to 0 < y < 1
+  mutate(REMOVAL_C = (REMOVAL_Exp * (nrow(data) - 1) + 1/2)/nrow(data))
+
+# Model
+model <- glmmTMB(REMOVAL_C ~ MASS_ln + I(MASS_ln^2) + SEED_NUMBER_PER_DEPOT_ln + (1|PUB), data = data_C, 
+                 family = beta_family(link = "logit"), REML = TRUE)
+summary(model); coef = summary(model)$coefficients$cond
+
+# Graph
+ggplot(data = data_C, aes(x = MASS_ln, y = REMOVAL_C)) + 
+  geom_point(aes(colour = ECOSYSTEM, shape = PROV), cex = 3, alpha = 0.75) + 
+  stat_function(fun = function(x) {inv.logit(coef[1, 1] + coef[2, 1]*x + coef[3, 1]*(x^2))}, 
+                size = 1.5, colour = "black") +
+  scale_x_continuous(breaks=c(0, 2.5, 5, 7.5, 10)) +
+  scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+  scale_colour_manual(values = cols) +
+  xlab("ln seed mass (mg)") + ylab("Proportion of seeds removed") +
+  theme_test(base_size = 18) +
+  theme(legend.position = "top", legend.box = "vertical",
+        axis.text = element_text(colour = "black")) +
+  guides(colour = guide_legend(title="Ecosystem:", order = 1), 
+         shape = guide_legend(title="Provenance:", order = 2))
+```
